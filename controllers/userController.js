@@ -1,6 +1,7 @@
 const { StatusCodes } = require("http-status-codes");
 const { userSchema } = require("../validation/userSchema");
-const pool = require("../db/pg-pool");
+const prisma = require("../db/prisma");
+//const pool = require("../db/pg-pool");
 const crypto = require("crypto");
 const util = require("util");
 const scrypt = util.promisify(crypto.scrypt);
@@ -28,9 +29,33 @@ const register = async (req, res, next) => {
   }
   //3. Check if user exists already using cleaned 'value.email')
   let user = null;
-  value.hashed_password = await hashPassword(value.password);
+  value.hashedPassword = await hashPassword(value.password);
+  delete value.password;
   // the code to here is like the in-memory version
   try {
+    user = await prisma.user.create({
+      data: value, // this uses name, email, and hashedPassword from 'value'
+      select: { name: true, email: true, id: true },
+    });
+    // 6. Success! (The 'user' variable is accessible here because of 'let user = null')
+    global.user_id = user.id;
+    res.status(StatusCodes.CREATED).json({
+      name: user.name,
+      email: user.email,
+    });
+  } catch (err) {
+    // 5. Handle the Prisma-specific error code for "Unique constraint"
+    if (err.name === "PrismaClientKnownRequestError" && err.code === "P2002") {
+      return res
+        .status(StatusCodes.BAD_REQUEST)
+        .json({ message: "User already exists" });
+    }
+    return next(err);
+  }
+
+  
+};
+/*
     user = await pool.query(
       `INSERT INTO users (email, name, hashed_password) 
       VALUES ($1, $2, $3) RETURNING id, email, name`,
@@ -53,7 +78,7 @@ const register = async (req, res, next) => {
     }
     return next(e); // all other errors get passed to the error handler
   }
-};
+};*/
 
 /*in Lesson 5b we remove using a loop function to find if the user is existing 
   //4. For validate section use value to create the user replace req.body with value
@@ -69,19 +94,16 @@ const register = async (req, res, next) => {
 const logon = async (req, res, next) => {
   const { email, password } = req.body;
   const lowCaseEmail = email?.toLowerCase();
-
   try {
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [
-      lowCaseEmail,
-    ]);
-    if (result.rows.length === 0) {
+    const user = await prisma.user.findUnique({
+      where: { email: lowCaseEmail },
+    });
+    if (!user) {
       return res
         .status(StatusCodes.UNAUTHORIZED)
-        .json({ message: "Authentication Failed." });
+        .json({ message: "Authentication Failed" });
     }
-
-    const user = result.rows[0];
-    const isMatched = await comparePassword(password, user.hashed_password);
+    const isMatched = await comparePassword(password, user.hashedPassword);
 
     if (isMatched) {
       global.user_id = user.id;
